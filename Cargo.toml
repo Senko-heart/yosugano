@@ -1,0 +1,19 @@
+[package]
+name = "yosugano"
+version = "0.1.0"
+edition = "2021"
+
+[lints.clippy]
+ptr_arg = "allow"
+len_zero = "allow"
+unit_arg = "allow"
+single_char_add_str = "allow"
+needless_range_loop = "allow"
+to_string_trait_impl = "allow"
+
+[profile.release-pub]
+inherits = "release"
+panic = "abort"
+
+[dependencies]
+encoding_rs = { version = "0.8.35", features = ["fast-kanji-encode"] }
