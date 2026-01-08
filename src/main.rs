@@ -1,5 +1,4 @@
 #![cfg(target_endian = "little")]
-#![feature(let_chains)]
 
 #[cfg(debug_assertions)]
 mod debug;
@@ -9,6 +8,7 @@ mod reverse;
 
 use std::fs;
 use std::io;
+use std::iter::once;
 use std::panic;
 use std::path::Path;
 use std::process::ExitCode;
@@ -21,7 +21,8 @@ use encoding_rs::SHIFT_JIS;
 use ioex::ReadEx;
 
 fn main() -> ExitCode {
-    #[cfg(panic = "abort")] {
+    #[cfg(panic = "abort")]
+    {
         panic::set_hook(Box::new(|info| {
             let location = info.location().unwrap();
             let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
@@ -36,7 +37,7 @@ fn main() -> ExitCode {
             eprintln!("thread '{name}' panicked at {location}:\n{msg}");
         }));
     }
-    
+
     if let Err(e) = decompile() {
         eprintln!("io error: {e}");
         return ExitCode::FAILURE;
@@ -44,9 +45,39 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum Encoding {
+    #[default]
+    Utf8,
+    Utf16LEBOM,
+    ShiftJIS,
+}
+
 fn decompile() -> io::Result<()> {
     let path = std::env::args_os().nth(1);
     let path = path.as_deref().map_or(Path::new("yosuga.csx"), <_>::as_ref);
+    let mut encoding = Encoding::Utf8;
+    let mut suggest_names = true;
+    for arg in std::env::args_os().skip(2).map(|os| os.into_string()) {
+        let arg_err = |os: std::ffi::OsString| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("non-utf8 argument {}", os.display()),
+            )
+        };
+        match arg.map_err(arg_err)?.as_str() {
+            "--utf8" => encoding = Encoding::Utf8,
+            "--utf16_le_bom" => encoding = Encoding::Utf16LEBOM,
+            "--shift_jis" => encoding = Encoding::ShiftJIS,
+            "--dumb" => suggest_names = false,
+            option => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unsupported option {option}"),
+                ))
+            }
+        };
+    }
     let dir = path.file_stem().map_or(path, <_>::as_ref);
     let file = std::fs::read(path)?;
     let mut data = file.as_slice();
@@ -62,6 +93,7 @@ fn decompile() -> io::Result<()> {
     };
     let sd = reverse::SourceDecompiler::new(&csx);
     let source = reverse::Source::new(sd);
+    let smart_names = if suggest_names { source.suggest_names() } else { vec![] };
     let (ref source_str, ref source_ix) = source.to_contents();
 
     fs::create_dir_all(dir)?;
@@ -75,13 +107,24 @@ fn decompile() -> io::Result<()> {
                     return io::Result::Ok(());
                 };
                 let name = match n {
+                    _ if suggest_names && smart_names[n].is_some() => smart_names[n].as_deref().unwrap(),
                     0 => "definitions.ch",
                     1 => "variables.cos",
                     _ => &format!("file-{}.cos", n - 1),
                 };
-                let (contents, _, errors) = SHIFT_JIS.encode(&source_str[ix]);
-                assert!(!errors);
-                fs::write(dir.join(name), contents)?;
+                match encoding {
+                    Encoding::Utf8 => fs::write(dir.join(name), &source_str[ix])?,
+                    Encoding::Utf16LEBOM => {
+                        let contents = once(0xfeff).chain(source_str[ix].encode_utf16());
+                        let bytes: Vec<_> = contents.flat_map(u16::to_le_bytes).collect();
+                        fs::write(dir.join(name), bytes)?;
+                    }
+                    Encoding::ShiftJIS => {
+                        let (contents, _, errors) = SHIFT_JIS.encode(&source_str[ix]);
+                        assert!(!errors);
+                        fs::write(dir.join(name), contents)?;
+                    }
+                }
             })
         }))
         .into_iter();

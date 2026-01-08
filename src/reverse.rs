@@ -121,7 +121,7 @@ impl Stack {
         if matches!(prio, Prio::Neg | Prio::Not) {
             self.assert_removable(1);
             let e = self.inner.last_mut().unwrap();
-            let paren = prio.should_paren(e.prio);
+            let paren = prio.should_paren(e.prio, false);
             let extra = 2 * paren as usize + op.len();
             self.exprs.resize(self.exprs.len() + extra, 0);
             let exprs = &mut &mut self.exprs[self.enter.e as usize..];
@@ -135,7 +135,7 @@ impl Stack {
             self.assert_removable(1);
             let e = self.inner.last_mut().unwrap();
             self.exprs.reserve(op.len() + 3);
-            if prio.should_paren(e.prio) {
+            if prio.should_paren(e.prio, false) {
                 self.exprs.insert((self.enter.e + e.expr.start) as usize, b'(');
                 self.exprs.push(b')');
                 e.expr.end += 2;
@@ -146,9 +146,9 @@ impl Stack {
             e.prio = prio;
         } else {
             self.assert_removable(2);
-            let [a, ref b] = self.inner.last_chunk_mut().unwrap();
-            let pa = prio.should_paren(a.prio);
-            let pb = prio.should_paren(b.prio);
+            let [a, b] = self.inner.last_chunk_mut().unwrap();
+            let pa = prio.should_paren(a.prio, false);
+            let pb = prio.should_paren(b.prio, true);
             let extra = 2 * (pa as usize + pb as usize + 1) + op.len();
             self.exprs.resize(self.exprs.len() + extra, 0);
             let exprs = &mut &mut self.exprs[self.enter.e as usize..];
@@ -167,8 +167,8 @@ impl Stack {
 
     fn push_indirect(&mut self) {
         self.assert_removable(2);
-        let [a, ref b] = self.inner.last_chunk_mut().unwrap();
-        let paren = Prio::Elt.should_paren(a.prio);
+        let [a, b] = self.inner.last_chunk_mut().unwrap();
+        let paren = Prio::Elt.should_paren(a.prio, false);
         let extra = 2 * (1 + paren as usize);
         self.exprs.resize(self.exprs.len() + extra, 0);
         let exprs = &mut &mut self.exprs[self.enter.e as usize..];
@@ -187,7 +187,7 @@ impl Stack {
         assert_ne!(mode, MCall::Global);
         let this = matches!(mode, MCall::This) as u32;
         assert!(this <= arg_num);
-        let paren = this != 0 && Prio::Elt.should_paren(self.inner[self.inner.len() - arg_num as usize].prio);
+        let paren = this != 0 && Prio::Elt.should_paren(self.inner[self.inner.len() - arg_num as usize].prio, false);
         let extra = name.len() + 2 * ((arg_num - this).saturating_sub(1) as usize + paren as usize + 1) + this as usize;
         self.exprs.resize(self.exprs.len() + extra, 0);
         let exprs = &mut &mut self.exprs[self.enter.e as usize..];
@@ -242,7 +242,7 @@ impl Stack {
 
     fn store(&mut self, strings: &mut String, assign: Op) -> Option<(StrIndex, StrIndex)> {
         self.assert_removable(2);
-        let [l, ref r] = self.inner.last_chunk_mut().unwrap();
+        let [l, r] = self.inner.last_chunk_mut().unwrap();
         let e = self.enter.e as usize;
         let lexpr = std::str::from_utf8(&self.exprs[e..][l.expr]).unwrap();
         let rexpr = std::str::from_utf8(&self.exprs[e..][r.expr]).unwrap();
@@ -341,10 +341,11 @@ struct SExpr {
 declare!(enum Prio: u8 { Lor, Land, Cmp, Xor, Or, And, Not, Add, Mul, Neg, Elt, Im, Call });
 
 impl Prio {
-    fn should_paren(self, opr: Prio) -> bool {
+    fn should_paren(self, opr: Prio, rhs: bool) -> bool {
         match (self, opr) {
             (Prio::Neg, Prio::Not) => false,
             (Prio::Cmp, Prio::Cmp) => true,
+            _ if rhs => self >= opr,
             _ => self > opr,
         }
     }
@@ -887,6 +888,33 @@ impl<'csx> Source<'csx> {
 
         nodes = compact;
         Self { csx, strings, nodes }
+    }
+
+    pub fn suggest_names(&self) -> Vec<Option<String>> {
+        let &Self { csx, strings: _, ref nodes } = self;
+        let mut names = vec![None; 2];
+        let mut found = None;
+        let mut init = false;
+        let mut skip = false;
+        for &node in nodes {
+            match node {
+                Function { name, .. } if csx / name == "@Initialize" => init = true,
+                Function { name, .. } => skip = found.replace(csx / name).is_some(),
+                #[rustfmt::skip]
+                EndFunc if init => {
+                    if let Some(name) = found.take() && !skip {
+                        names.push(Some(name.to_owned() + ".cos"));
+                    } else {
+                        names.push(None);
+                    }
+                    init = false;
+                    skip = false;
+                }
+                Structure { .. } => skip = true,
+                _ => (),
+            }
+        }
+        names
     }
 
     pub fn to_contents(&self) -> (String, Vec<StrIndex>) {
