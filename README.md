@@ -10,7 +10,10 @@ It's more likely that the older games may decompile correctly.
 
 `yosugano [csx-path]` — locates `.csx` file, on success saves the script files: *definitions.ch, variables.cos, file-N.cos...* This may change in the future.
 
-See the official documentation on how to use `cotoco.exe` and `cotolink.exe`. `.cos` files should be compiled and linked in the suggested order above.
+By default tries to pick names for single file functions, which is how scenario files are stored. To disable, use `--dumb`.  
+The default output encoding is UTF-8 for the simplicity of manual editing. Valid options are `--utf8`, `--utf16_le_bom`, `--shift_jis`. UTF-16 and Shift JIS can be compiled with `cotopha.exe`. Shift JIS is not recommended.
+
+See the official documentation on how to use `cotopha.exe` and `cotolink.exe`. `.cos` files should be compiled and linked in the suggested order above.
 
 ## Compiling
 
